@@ -51,6 +51,7 @@ class API
 		end
 		# FIXME remove when projects and team are no more in beta
 		map["Accept"] = "application/vnd.github.inertia-preview+json"
+		map["Accept"] = "application/vnd.github.hellcat-preview+json"
 		return map
 	end
 
@@ -61,65 +62,32 @@ class API
 
 	var last_error: nullable GithubError = null
 
-	fun api_get(uri: String): nullable Serializable do
+	private fun send(method, path: String, body: nullable String): nullable Serializable do
+		last_error = null
+		path = sanitize_uri(path)
+		var uri = "{api_url}{path}"
 		var request = new CurlHTTPRequest(uri)
-		request.user_agent = user_agent
-		request.headers = headers
-		return check_error(request.execute)
-	end
-
-	fun api_post(uri: String, body: nullable String): nullable Serializable do
-		var request = new CurlHTTPRequest(uri)
+		request.method = method
 		request.user_agent = user_agent
 		request.headers = headers
 		request.body = body
-		return check_error(request.execute)
+		return check_response(uri, request.execute)
 	end
 
-	fun api_put(uri: String, body: nullable String): nullable Serializable do
-		print body or else "NULL"
-		var request = new CurlHTTPRequest(uri)
-		request.user_agent = user_agent
-		request.headers = headers
-		request.body = body
-		request.method = "PUT"
-		return check_error(request.execute)
+	fun get(path: String): nullable Object do
+		return deserialize(send("GET", path))
 	end
 
-	fun get(path: String): nullable GithubObject do
-		last_error = null
-		path = sanitize_uri(path)
-		var res = api_get("{api_url}{path}")
-		var obj = deserialize(res)
-		if obj isa GithubError then
-			last_error = obj
-			return null
-		end
-		return obj.as(nullable GithubObject)
+	fun post(path: String, data: nullable String): nullable Object do
+		return deserialize(send("POST", path, data))
 	end
 
-	fun post(path: String, data: GithubObject): nullable GithubObject do
-		last_error = null
-		path = sanitize_uri(path)
-		var res = api_post("{api_url}{path}", data.post_data)
-		var obj = deserialize(res)
-		if obj isa GithubError then
-			last_error = obj
-			return null
-		end
-		return obj.as(nullable GithubObject)
+	fun put(path: String, data: nullable String): nullable Object do
+		return deserialize(send("PUT", path, data))
 	end
 
-	fun put(path: String, data: GithubObject): nullable GithubObject do
-		last_error = null
-		path = sanitize_uri(path)
-		var res = api_put("{api_url}{path}", data.post_data)
-		var obj = deserialize(res)
-		if obj isa GithubError then
-			last_error = obj
-			return null
-		end
-		return obj.as(nullable GithubObject)
+	fun delete(path: String): nullable Object do
+		return deserialize(send("DELETE", path))
 	end
 
 	# Escape `uri` in an acceptable format for Github.
@@ -128,17 +96,17 @@ class API
 		return uri.replace(" ", "%20")
 	end
 
-	private fun check_error(response: CurlResponse): nullable Serializable do
+	private fun check_response(uri: String, response: CurlResponse): nullable Serializable do
 		if response isa CurlResponseSuccess then
 			return response.body_str
 		else if response isa CurlResponseFailed then
-			# var title = "CurlResponseFailed"
-			var msg = "Request to Github API failed"
-			var err = new GithubError(msg)
-			# err.json["requested_uri"] = uri
-			# err.json["error_code"] = response.error_code
-			# err.json["response"] = response.error_msg
-			return err
+			last_error = new GithubAPIError(
+				"Request to Github API failed",
+				response.error_msg,
+				response.error_code,
+				uri
+			)
+			return null
 		end
 		abort
 	end
@@ -146,10 +114,15 @@ class API
 	# Deserialize an object
 	private fun deserialize(string: nullable Serializable): nullable Object do
 		if string == null then return null
+		# print string
 		var deserializer = new GithubDeserializer(string.to_s)
 		var res = deserializer.deserialize
 		if deserializer.errors.not_empty then
-			return new GithubDeserializerErrors("Deserialization error", deserializer.errors)
+			last_error = new GithubDeserializerErrors("Deserialization failed", deserializer.errors)
+			return null
+		else if res isa GithubError then
+			last_error = res
+			return null
 		end
 		return res
 	end
@@ -167,7 +140,7 @@ class API
 	end
 
 	fun post_team(org_login: String, team: Team): nullable Team do
-		return post("/orgs/{org_login}/teams", team).as(nullable Team)
+		return post("/orgs/{org_login}/teams", team.post_data).as(nullable Team)
 	end
 
 	fun get_repo(repo_slug: String): nullable Repo do
@@ -175,11 +148,21 @@ class API
 	end
 
 	fun post_repo(repo: PostRepo): nullable Repo do
-		return post("/user/repos", repo).as(nullable Repo)
+		return post("/user/repos", repo.post_data).as(nullable Repo)
+	end
+
+	fun get_repo_labels(repo_slug: String): nullable Array[Label] do
+		var arr = get("/repos/{repo_slug}/labels")
+		var res = new Array[Label]
+		if not arr isa Array[Object] then return res
+		for obj in arr do
+			if obj isa Label then res.add obj
+		end
+		return res
 	end
 
 	fun post_repo_org(org_login: String, repo: PostRepo): nullable Repo do
-		return post("/orgs/{org_login}/repos", repo).as(nullable Repo)
+		return post("/orgs/{org_login}/repos", repo.post_data).as(nullable Repo)
 	end
 
 	fun get_project(id: Int): nullable Project do
@@ -187,7 +170,7 @@ class API
 	end
 
 	fun post_project_org(org_login: String, project: Project): nullable Project do
-		return post("/orgs/{org_login}/projects", project).as(nullable Project)
+		return post("/orgs/{org_login}/projects", project.post_data).as(nullable Project)
 	end
 
 	fun get_issue(repo_slug: String, id: Int): nullable Issue do
@@ -195,7 +178,7 @@ class API
 	end
 
 	fun post_issue(repo_slug: String, issue: PostIssue): nullable Issue do
-		return post("/repos/{repo_slug}/issues", issue).as(nullable Issue)
+		return post("/repos/{repo_slug}/issues", issue.post_data).as(nullable Issue)
 	end
 
 	fun get_label(repo_slug: String, label_name: String): nullable Label do
@@ -203,7 +186,11 @@ class API
 	end
 
 	fun post_label(repo_slug: String, lbl: Label): nullable Label do
-		return post("/repos/{repo_slug}/labels", lbl).as(nullable Label)
+		return post("/repos/{repo_slug}/labels", lbl.post_data).as(nullable Label)
+	end
+
+	fun delete_label(repo_slug: String, label_name: String): nullable Label do
+		return delete("/repos/{repo_slug}/labels/{label_name}").as(nullable Label)
 	end
 
 	fun get_milestone(repo_slug: String, milestone_number: Int): nullable Milestone do
@@ -211,7 +198,7 @@ class API
 	end
 
 	fun post_milestone(repo_slug: String, milestone: Milestone): nullable Milestone do
-		return post("/repos/{repo_slug}/milestones", milestone).as(nullable Milestone)
+		return post("/repos/{repo_slug}/milestones", milestone.post_data).as(nullable Milestone)
 	end
 
 	fun get_readme(repo_slug: String): nullable File do
@@ -223,7 +210,7 @@ class API
 	end
 
 	fun put_file(repo_slug: String, path: String, file: FilePost): nullable File do
-		return put("/repos/{repo_slug}/contents/{path}", file).as(nullable File)
+		return put("/repos/{repo_slug}/contents/{path}", file.post_data).as(nullable File)
 	end
 end
 
@@ -241,7 +228,6 @@ class GithubDeserializer
 	super JsonDeserializer
 
 	redef fun class_name_heuristic(obj) do
-		print obj.join(",", ":")
 		if obj.has_key("resource") and obj.has_key("code") then
 			return "GithubFieldError"
 		else if obj.has_key("message") and obj.has_key("documentation_url") then
@@ -301,29 +287,39 @@ abstract class GithubObject
 	end
 end
 
-# An error thrown by the Github API.
-#
-# Depending on the kind of error, additionnal informations can be stored in
-# the error object.
-# Check the `json` value to find them.
 class GithubError
-	super GithubObject
 	super Error
 	serialize
+
+	fun body: String do return ""
+end
+
+class GithubAPIError
+	super GithubError
+
+	var response: String
+	var status_code: Int
+	var requested_uri: String
+
+	redef fun body do
+		var b = new Buffer
+		b.append "Code: {status_code}\n"
+		b.append "Response: {response}\n"
+		b.append "Requested URI: {requested_uri}\n"
+		return b.write_to_string
+	end
 end
 
 class GithubValidationError
 	super GithubError
-	serialize
 
 	var errors: nullable Array[nullable Serializable] = null is optional
 
-	redef fun to_s do return "{super}: {(errors or else new Array[String]).join(", ")}"
+	redef fun body do return "{(errors or else new Array[String]).join("\n")}"
 end
 
 class GithubFieldError
 	super GithubError
-	serialize
 
 	var resource: String
 	var code: String
@@ -333,11 +329,10 @@ end
 
 class GithubDeserializerErrors
 	super GithubError
-	serialize
 
 	var deserizalization_errors: Array[Error]
 
-	redef fun to_s do return "{deserizalization_errors.join(", ")}"
+	redef fun body do return "{deserizalization_errors.join(", ")}"
 end
 
 class GitUser
@@ -374,12 +369,13 @@ class Team
 	serialize
 
 	var name: String
-	var description: nullable String = null is optional
-	var maintainers: nullable Array[String] = null is optional
-	var repo_names: nullable Array[String] = null is optional
-	var privacy: nullable String = null is optional
-	var permission: nullable String = null is optional
-	var parent_team_id: nullable Int = null is optional
+	var description: nullable String = null is optional, writable
+	var maintainers: nullable Array[String] = null is optional, writable
+	var repo_names: nullable Array[String] = null is optional, writable
+	var privacy: nullable String = null is optional, writable
+	var permission: nullable String = null is optional, writable
+	var parent_team_id: nullable Int = null is optional, writable
+	var id: nullable Int = null is optional, writable
 end
 
 class Repo
@@ -403,19 +399,19 @@ class PostRepo
 	serialize
 
 	var name: String
-	var description: nullable String = null is optional
-	var homepage: nullable String = null is optional
-	var is_private: nullable Bool = null is optional
-	var has_issues: nullable Bool = null is optional
-	var has_projects: nullable Bool = null is optional
-	var has_wiki: nullable Bool = null is optional
-	var team_id: nullable Int = null is optional
-	var auto_init: nullable Bool = null is optional
-	var gitignore_template: nullable String = null is optional
-	var license_template: nullable String = null is optional
-	var allow_squash_merge: nullable Bool = null is optional
-	var allow_merge_commit: nullable Bool = null is optional
-	var allow_rebase_merge: nullable Bool = null is optional
+	var description: nullable String = null is optional, writable
+	var homepage: nullable String = null is optional, writable
+	var is_private: nullable Bool = null is optional, serialize_as("private"), writable
+	var has_issues: nullable Bool = null is optional, writable
+	var has_projects: nullable Bool = null is optional, writable
+	var has_wiki: nullable Bool = null is optional, writable
+	var team_id: nullable Int = null is optional, writable
+	var auto_init: nullable Bool = null is optional, writable
+	var gitignore_template: nullable String = null is optional, writable
+	var license_template: nullable String = null is optional, writable
+	var allow_squash_merge: nullable Bool = null is optional, writable
+	var allow_merge_commit: nullable Bool = null is optional, writable
+	var allow_rebase_merge: nullable Bool = null is optional, writable
 end
 
 class Project
@@ -466,6 +462,7 @@ class Label
 	var name: String
 	var color: String
 	var description: nullable String = null is optional
+	var default: nullable Bool = null is optional
 end
 
 class Milestone
