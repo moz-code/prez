@@ -1,15 +1,5 @@
-# CSGames %YEAR%
-
-Université: **%SCHOOL%**
-
-## Dépôt de gestion
-
-TODO intro
+# Gestion %TEAM%
 
 ## Comité Organisateur
 
 %CO%
-
-## Liens utiles
-
-%LINKS%

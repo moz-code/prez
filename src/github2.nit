@@ -86,8 +86,9 @@ class API
 		return deserialize(send("PUT", path, data))
 	end
 
-	fun delete(path: String): nullable Object do
-		return deserialize(send("DELETE", path))
+	fun delete(path: String): Bool do
+		send("DELETE", path)
+		return last_error != null
 	end
 
 	# Escape `uri` in an acceptable format for Github.
@@ -143,6 +144,11 @@ class API
 		return post("/orgs/{org_login}/teams", team.post_data).as(nullable Team)
 	end
 
+	fun put_team_membership(team_id: Int, user_name: String, membership: TeamMembership): nullable TeamMembership
+	do
+		return put("/teams/{team_id}/memberships/{user_name}", membership.post_data).as(nullable TeamMembership)
+	end
+
 	fun get_repo(repo_slug: String): nullable Repo do
 		return get("/repos/{repo_slug}").as(nullable Repo)
 	end
@@ -151,14 +157,12 @@ class API
 		return post("/user/repos", repo.post_data).as(nullable Repo)
 	end
 
+	fun delete_repo(repo_slug: String): Bool do
+		return delete("/repos/{repo_slug}")
+	end
+
 	fun get_repo_labels(repo_slug: String): nullable Array[Label] do
-		var arr = get("/repos/{repo_slug}/labels")
-		var res = new Array[Label]
-		if not arr isa Array[Object] then return res
-		for obj in arr do
-			if obj isa Label then res.add obj
-		end
-		return res
+		return new GithubArray[Label].from_response(get("/repos/{repo_slug}/labels"))
 	end
 
 	fun post_repo_org(org_login: String, repo: PostRepo): nullable Repo do
@@ -171,6 +175,11 @@ class API
 
 	fun post_project_org(org_login: String, project: Project): nullable Project do
 		return post("/orgs/{org_login}/projects", project.post_data).as(nullable Project)
+	end
+
+	fun get_issues(repo_slug: String): nullable Array[Issue] do
+		# TODO pagination
+		return new GithubArray[Issue].from_response(get("/repos/{repo_slug}/issues?page=1&per_page=100"))
 	end
 
 	fun get_issue(repo_slug: String, id: Int): nullable Issue do
@@ -189,12 +198,17 @@ class API
 		return post("/repos/{repo_slug}/labels", lbl.post_data).as(nullable Label)
 	end
 
-	fun delete_label(repo_slug: String, label_name: String): nullable Label do
-		return delete("/repos/{repo_slug}/labels/{label_name}").as(nullable Label)
+	fun delete_label(repo_slug: String, label_name: String): Bool do
+		return delete("/repos/{repo_slug}/labels/{label_name}")
 	end
 
 	fun get_milestone(repo_slug: String, milestone_number: Int): nullable Milestone do
 		return get("/repos/{repo_slug}/milestones/{milestone_number}").as(nullable Milestone)
+	end
+
+	fun get_milestones(repo_slug: String): nullable Array[Milestone] do
+		# TODO pagination
+		return new GithubArray[Milestone].from_response(get("/repos/{repo_slug}/milestones?page=1&per_page=100"))
 	end
 
 	fun post_milestone(repo_slug: String, milestone: Milestone): nullable Milestone do
@@ -214,6 +228,17 @@ class API
 	end
 end
 
+class GithubArray[E]
+	super Array[E]
+
+	init from_response(res: nullable Object) do
+		if not res isa Array[Object] then return
+		for obj in res do
+			if obj isa E then add obj
+		end
+	end
+end
+
 class GithubSerializer
 	super JsonSerializer
 
@@ -228,6 +253,7 @@ class GithubDeserializer
 	super JsonDeserializer
 
 	redef fun class_name_heuristic(obj) do
+		# print obj.to_pretty_json
 		if obj.has_key("resource") and obj.has_key("code") then
 			return "GithubFieldError"
 		else if obj.has_key("message") and obj.has_key("documentation_url") then
@@ -241,6 +267,8 @@ class GithubDeserializer
 			return "Repo"
 		else if obj.has_key("members_count") then
 			return "Team"
+		else if obj.has_key("role") and obj.has_key("state") then
+			return "TeamMembership"
 		else if obj.has_key("columns_url") then
 			return "Project"
 		else if obj.has_key("due_on") then
@@ -312,6 +340,7 @@ end
 
 class GithubValidationError
 	super GithubError
+	serialize
 
 	var errors: nullable Array[nullable Serializable] = null is optional
 
@@ -320,11 +349,12 @@ end
 
 class GithubFieldError
 	super GithubError
+	serialize
 
 	var resource: String
 	var code: String
 
-	redef fun to_s do return "{super}: {code}"
+	redef fun to_s do return "{super}/{resource}: {code}"
 end
 
 class GithubDeserializerErrors
@@ -352,6 +382,8 @@ class User
 
 	var id: Int
 
+	var html_url: nullable String = null is optional, writable
+
 	# Avatar image url for this user.
 	var avatar_url: nullable String is writable
 
@@ -376,6 +408,14 @@ class Team
 	var permission: nullable String = null is optional, writable
 	var parent_team_id: nullable Int = null is optional, writable
 	var id: nullable Int = null is optional, writable
+end
+
+class TeamMembership
+	super GithubObject
+	serialize
+
+	var role: nullable String = null is optional, writable
+	var state: nullable String = null is optional, writable
 end
 
 class Repo
@@ -439,8 +479,7 @@ class Issue
 	var labels: nullable Array[Label] = null is optional
 	var assignee: nullable User = null is optional
 	var assignees: nullable Array[User] = null is optional
-	# TODO milestone
-	# var milestone: nullable Int = null is optional
+	var milestone: nullable Milestone = null is optional
 end
 
 class PostIssue
@@ -469,11 +508,13 @@ class Milestone
 	super GithubObject
 	serialize
 
+	var id: nullable Int = null is optional
 	var title: String
+	var number: nullable Int = null is optional
 	var state: nullable String = null is optional
 	var description: nullable String = null is optional
 	var creator: nullable User = null is optional
-	var due_date: nullable String = null is optional
+	var due_on: nullable String = null is optional
 end
 
 class File
@@ -552,3 +593,6 @@ var error = api.last_error
 if error != null then
 	print error
 end
+
+
+#TODO better error handling
